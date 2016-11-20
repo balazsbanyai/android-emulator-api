@@ -1,0 +1,163 @@
+import fi.iki.elonen.NanoHTTPD
+import okhttp3.Request
+import org.apache.commons.net.telnet.TelnetClient
+import retrofit2.Call
+import retrofit2.Callback
+import retrofit2.Response
+
+
+apply plugin: 'com.android.application'
+
+android {
+    compileSdkVersion 23
+    buildToolsVersion "23.0.3"
+
+    defaultConfig {
+        applicationId "com.banyaibalazs.shelly"
+        minSdkVersion 19
+        targetSdkVersion 23
+        versionCode 1
+        versionName "1.0"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+    compile fileTree(dir: 'libs', include: ['*.jar'])
+    testCompile 'junit:junit:4.12'
+    compile 'com.android.support:appcompat-v7:23.4.0'
+    compile 'com.squareup.retrofit2:retrofit:2.1.0'
+    compile project(path: ':service')
+}
+
+def shelly = new ShellyServer();
+
+task startShelly << {
+    shelly.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
+}
+
+task stopShelly << {
+    shelly.stop()
+}
+
+android {
+    testVariants.all { variant ->
+        variant.connectedInstrumentTest.dependsOn startShelly
+        variant.connectedInstrumentTest.finalizedBy stopShelly
+    }
+}
+
+task debugShelly {
+    dependsOn startShelly
+    doLast {
+        while (true) {}
+    }
+}
+
+class Service implements com.banyaibalazs.shelly.ShellyService {
+
+    @Override
+    retrofit2.Call<Void> call(@retrofit2.http.Path("number") String number) {
+        return new Call<Void>() {
+            @Override
+            Response<Void> execute() throws IOException {
+                println "Calling $number"
+                try {
+                    CustomTelnetClient telnet = new CustomTelnetClient();
+                    telnet.connect("127.0.0.1", 5554); // TODO get emulator port dynamically
+                    def command = "gsm call $number";
+                    telnet.executeShellCommand(command)
+                    telnet.disconnect()
+                } catch (Exception e) {
+                    println "Call failed"
+                    e.printStackTrace()
+                }
+                return Response.success(null)
+            }
+
+            @Override
+            void enqueue(Callback<Void> callback) {
+
+            }
+
+            @Override
+            boolean isExecuted() {
+                return false
+            }
+
+            @Override
+            void cancel() {
+
+            }
+
+            @Override
+            boolean isCanceled() {
+                return false
+            }
+
+            @Override
+            Call<Void> clone() {
+                return null
+            }
+
+            @Override
+            Request request() {
+                return null
+            }
+        }
+    }
+}
+
+class ShellyServer extends NanoHTTPD {
+
+    ShellyServer() {
+        super(5656);
+    }
+
+    @Override
+    public NanoHTTPD.Response serve(NanoHTTPD.IHTTPSession session) {
+        println("Shelly got request: ${session.uri}")
+
+        def explodedUri = session.uri.split("/")
+
+        Map<String, Action> mapping = new HashMap<>();
+        mapping.put("call", {
+            Call call = new Service().call(explodedUri[2])
+            call.execute()
+        })
+
+        Action action = mapping.get(explodedUri[1]);
+        if (action == null) {
+            println "No such mapping. ${explodedUri[1]} {uri: $explodedUri}"
+        } else {
+            action.execute()
+        }
+
+        return newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "application/json", "helloka");
+    }
+}
+
+class CustomTelnetClient extends TelnetClient {
+
+    ByteArrayOutputStream readFully() {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        int result = inputStream.read();
+        while (inputStream.available()) {
+            buf.write((byte) result);
+            result = inputStream.read();
+        }
+        println("CustomTelnetClient::readFully: ${buf.toString()}")
+    }
+
+    void executeShellCommand(GString command) {
+        println("CustomTelnetClient::executeShellCommand: $command")
+        def out = new PrintStream(outputStream);
+        out.println(command)
+        out.flush()
+    }
+}
